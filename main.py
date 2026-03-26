@@ -81,10 +81,14 @@ def draw_3d_map(point_a, point_b, obstacles):
     )
     st.pydeck_chart(r)
 
-# ==================== 心跳监控函数（飞行监控使用）====================
+# ==================== 心跳监控函数（飞行监控使用，已修复超时误报）====================
 def heartbeat_monitor():
     """飞行监控页面：心跳模拟与可视化"""
     st.subheader("飞行监控")
+    
+    # 重置计时起点，避免进入页面时立即触发超时
+    st.session_state.last_received_time = time.time()
+    
     data = st.session_state.heartbeat_data
     placeholder = st.empty()          # 用于动态显示表格
     chart_placeholder = st.empty()    # 用于动态显示图表
@@ -120,7 +124,9 @@ def heartbeat_monitor():
         # 掉线检测：如果距离上次接收超过3秒，则报警
         if current_time - st.session_state.last_received_time > 3:
             st.error("连接超时！")
-        st.session_state.last_received_time = current_time
+        else:
+            # 只有正常收到心跳时才更新时间
+            st.session_state.last_received_time = current_time
 
         time.sleep(1)   # 模拟每秒一次心跳
     st.success("演示结束")
