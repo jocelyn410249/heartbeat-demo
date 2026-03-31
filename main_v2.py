@@ -1,3 +1,10 @@
+import subprocess
+import sys
+
+try:
+    import streamlit_folium
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-folium", "folium", "geojson"])
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
