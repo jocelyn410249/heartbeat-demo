@@ -1,4 +1,3 @@
-import subprocess
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -11,7 +10,7 @@ import folium
 from folium.plugins import Draw
 
 # ==================== 页面配置 ====================
-st.set_page_config(layout="wide", page_title="无人机地面站 (新)")
+st.set_page_config(layout="wide", page_title="无人机地面站")
 st.sidebar.title("导航")
 page = st.sidebar.radio("功能页面", ["航线规划", "飞行监控"])
 
@@ -27,8 +26,8 @@ if "heartbeat_data" not in st.session_state:
 if "last_received_time" not in st.session_state:
     st.session_state.last_received_time = time.time()
 
-# 障碍物多边形数据（GeoJSON 格式）
-OBSTACLE_FILE = "obstacle_config.json"  # 保存到程序同目录
+# 障碍物配置文件路径（与程序同目录）
+OBSTACLE_FILE = "obstacle_config.json"
 if "obstacle_geojson" not in st.session_state:
     if os.path.exists(OBSTACLE_FILE):
         with open(OBSTACLE_FILE, "r", encoding="utf-8") as f:
@@ -38,11 +37,13 @@ if "obstacle_geojson" not in st.session_state:
 
 # ==================== 障碍物持久化函数 ====================
 def save_obstacles():
+    """将当前多边形保存到 JSON 文件"""
     with open(OBSTACLE_FILE, "w", encoding="utf-8") as f:
         json.dump(st.session_state.obstacle_geojson, f, indent=2)
     st.success(f"障碍物已保存到 {OBSTACLE_FILE}")
 
 def load_obstacles():
+    """从 JSON 文件加载多边形"""
     if os.path.exists(OBSTACLE_FILE):
         with open(OBSTACLE_FILE, "r", encoding="utf-8") as f:
             st.session_state.obstacle_geojson = json.load(f)
@@ -51,6 +52,7 @@ def load_obstacles():
         st.warning("没有找到保存的障碍物文件")
 
 def clear_obstacles():
+    """清除所有多边形"""
     st.session_state.obstacle_geojson = {"type": "FeatureCollection", "features": []}
     st.success("已清除所有障碍物")
 
@@ -187,10 +189,11 @@ if page == "航线规划":
     st.slider("设定飞行高度 (m)", 0, 200, 50, key="flight_height")
 
     # 障碍物管理工具栏
-    st.markdown("### 障碍物圈选")
-    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    st.markdown("### 障碍物配置持久化")
+    st.caption(f"配置文件: {os.path.abspath(OBSTACLE_FILE)} | 版本: v12.2 障碍物持久化版")
+    col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
     with col_btn1:
-        if st.button("💾 保存障碍物"):
+        if st.button("💾 保存到文件"):
             save_obstacles()
     with col_btn2:
         if st.button("📂 从文件加载"):
@@ -198,10 +201,28 @@ if page == "航线规划":
     with col_btn3:
         if st.button("🗑️ 清除全部"):
             clear_obstacles()
+    with col_btn4:
+        # 一键部署（这里简单重新保存并提示）
+        if st.button("🚀 一键部署"):
+            save_obstacles()
+            st.info("已保存当前配置，应用已就绪。")
+
+    # 下载配置文件按钮
+    if os.path.exists(OBSTACLE_FILE):
+        with open(OBSTACLE_FILE, "r", encoding="utf-8") as f:
+            config_data = f.read()
+        st.download_button(
+            label="📥 下载配置文件到本地",
+            data=config_data,
+            file_name="obstacle_config.json",
+            mime="application/json"
+        )
+    else:
+        st.info("尚未保存任何配置，请先绘制多边形并点击「保存到文件」。")
 
     # 显示卫星地图
     draw_satellite_map()
-    st.caption("提示：点击左侧绘图工具绘制多边形（障碍物），绘制后自动保存到当前会话。点击「保存障碍物」可永久保存到文件。")
+    st.caption("提示：点击左侧绘图工具绘制多边形（障碍物），绘制后自动保存到当前会话。点击「保存到文件」可永久保存到本地。")
 
 else:
     heartbeat_monitor()
