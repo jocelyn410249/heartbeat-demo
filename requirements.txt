@@ -2,3 +2,6 @@ streamlit
 plotly
 pandas
 pydeck
+streamlit-folium
+folium
+geojson
