@@ -120,6 +120,8 @@ if "safe_radius" not in st.session_state:
     st.session_state.safe_radius = 5.0
 if "flight_speed" not in st.session_state:
     st.session_state.flight_speed = 8.5
+if "bypass_strategy" not in st.session_state:
+    st.session_state.bypass_strategy = "最佳航线"
 
 if "obstacles_list" not in st.session_state:
     OBSTACLE_FILE = "obstacles_full.json"
@@ -165,8 +167,9 @@ def clear_all_obstacles():
     st.session_state.waypoints = []
     st.success("🗑️ 已清除所有障碍物")
 
-# ==================== 航线规划 ====================
-def plan_route():
+# ==================== 航线规划（支持绕行策略）====================
+def plan_route(strategy):
+    """航线规划：根据策略选择向左/向右/最佳绕行"""
     a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     
@@ -190,11 +193,17 @@ def plan_route():
                 obs_height = obs.get("height_m", 10)
                 
                 if st.session_state.flight_height > obs_height + st.session_state.safe_radius:
-                    messages.append(f"✈️ {obs['name']}：飞跃")
+                    # 飞跃：在AB之间添加一个中点
+                    mid_lat = (a_lat + b_lat) / 2
+                    mid_lng = (a_lng + b_lng) / 2
+                    waypoints.append([mid_lat, mid_lng])
+                    messages.append(f"✈️ {obs['name']}：飞跃（高度{st.session_state.flight_height}m > {obs_height}m）")
                 else:
+                    # 需要绕行
                     center_lng = sum(p[0] for p in polygon) / len(polygon)
                     center_lat = sum(p[1] for p in polygon) / len(polygon)
                     
+                    # 计算AB方向向量
                     dx = b_lng - a_lng
                     dy = b_lat - a_lat
                     length = math.sqrt(dx*dx + dy*dy)
@@ -202,34 +211,47 @@ def plan_route():
                         dx /= length
                         dy /= length
                     
+                    # 垂直向量（左右方向）
                     perp_x = -dy
                     perp_y = dx
                     
-                    left_lng = center_lng - perp_x * safe_radius_deg * 3
-                    left_lat = center_lat - perp_y * safe_radius_deg * 3
-                    right_lng = center_lng + perp_x * safe_radius_deg * 3
-                    right_lat = center_lat + perp_y * safe_radius_deg * 3
+                    # 绕行距离 = 安全半径 * 3 转经纬度
+                    offset = safe_radius_deg * 3
                     
-                    def calc_dist(lat, lng):
+                    left_lng = center_lng - perp_x * offset
+                    left_lat = center_lat - perp_y * offset
+                    right_lng = center_lng + perp_x * offset
+                    right_lat = center_lat + perp_y * offset
+                    
+                    def calc_total_dist(lat, lng):
                         d1 = haversine_distance(a_lat, a_lng, lat, lng)
                         d2 = haversine_distance(b_lat, b_lng, lat, lng)
                         return d1 + d2
                     
-                    left_dist = calc_dist(left_lat, left_lng)
-                    right_dist = calc_dist(right_lat, right_lng)
+                    left_dist = calc_total_dist(left_lat, left_lng)
+                    right_dist = calc_total_dist(right_lat, right_lng)
                     
-                    if left_dist <= right_dist:
+                    # 根据策略选择绕行方向
+                    if strategy == "向左绕行":
                         waypoints.append([left_lat, left_lng])
-                        messages.append(f"🔄 {obs['name']}：向左绕行")
-                    else:
+                        messages.append(f"🔄 {obs['name']}：向左绕行（高度{st.session_state.flight_height}m ≤ {obs_height}m）")
+                    elif strategy == "向右绕行":
                         waypoints.append([right_lat, right_lng])
-                        messages.append(f"🔄 {obs['name']}：向右绕行")
+                        messages.append(f"🔄 {obs['name']}：向右绕行（高度{st.session_state.flight_height}m ≤ {obs_height}m）")
+                    else:  # 最佳航线
+                        if left_dist <= right_dist:
+                            waypoints.append([left_lat, left_lng])
+                            messages.append(f"⭐ {obs['name']}：最佳航线-向左绕行（路径更短）")
+                        else:
+                            waypoints.append([right_lat, right_lng])
+                            messages.append(f"⭐ {obs['name']}：最佳航线-向右绕行（路径更短）")
         except Exception as e:
             messages.append(f"⚠️ 处理障碍物出错: {str(e)[:50]}")
             continue
     
     waypoints.append([b_lat, b_lng])
     
+    # 去重
     unique_wp = []
     for wp in waypoints:
         if not unique_wp or (abs(wp[0]-unique_wp[-1][0]) > 1e-7 or abs(wp[1]-unique_wp[-1][1]) > 1e-7):
@@ -250,22 +272,12 @@ def draw_full_map():
     b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     center = [(a_lat + b_lat) / 2, (a_lng + b_lng) / 2]
     
-    # 创建地图
     m = folium.Map(location=center, zoom_start=16, tiles="OpenStreetMap")
     
-    # 起点和终点标记
-    folium.Marker(
-        [a_lat, a_lng], 
-        popup="起点 A", 
-        icon=folium.Icon(color="green", icon="play")
-    ).add_to(m)
-    folium.Marker(
-        [b_lat, b_lng], 
-        popup="终点 B", 
-        icon=folium.Icon(color="red", icon="flag")
-    ).add_to(m)
+    folium.Marker([a_lat, a_lng], popup="起点 A", icon=folium.Icon(color="green", icon="play")).add_to(m)
+    folium.Marker([b_lat, b_lng], popup="终点 B", icon=folium.Icon(color="red", icon="flag")).add_to(m)
     
-    # 绘制障碍物
+    # 障碍物
     for obs in st.session_state.obstacles_list:
         try:
             coords_gcj = obs["geojson"]["geometry"]["coordinates"][0]
@@ -285,9 +297,8 @@ def draw_full_map():
         except:
             continue
     
-    # 绘制航线（重要：必须在添加绘图控件之前添加，否则会被覆盖）
+    # 航线
     if st.session_state.waypoints and len(st.session_state.waypoints) >= 2:
-        # 航线连线
         folium.PolyLine(
             st.session_state.waypoints,
             color="blue",
@@ -296,7 +307,6 @@ def draw_full_map():
             popup="规划航线"
         ).add_to(m)
         
-        # 中间航点标记
         for i, wp in enumerate(st.session_state.waypoints[1:-1]):
             folium.CircleMarker(
                 wp,
@@ -307,24 +317,15 @@ def draw_full_map():
                 popup=f"航点 {i+1}"
             ).add_to(m)
     
-    # 添加绘图控件（最后添加，避免覆盖航线）
     Draw(
         export=True,
-        draw_options={
-            "polygon": True,
-            "polyline": False,
-            "rectangle": False,
-            "circle": False,
-            "marker": False,
-            "circlemarker": False
-        },
+        draw_options={"polygon": True, "polyline": False, "rectangle": False,
+                      "circle": False, "marker": False, "circlemarker": False},
         edit_options={"edit": True, "remove": True}
     ).add_to(m)
     
-    # 显示地图并获取绘制数据
     output = st_folium(m, width=800, height=500, returned_objects=["last_active_drawing"])
     
-    # 处理新绘制的多边形
     if output and output.get("last_active_drawing"):
         drawing = output["last_active_drawing"]
         if drawing and drawing["geometry"]["type"] == "Polygon":
@@ -339,13 +340,7 @@ def draw_full_map():
                 "id": len(st.session_state.obstacles_list),
                 "name": f"障碍物_{len(st.session_state.obstacles_list)+1}",
                 "height_m": 10.0,
-                "geojson": {
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "Polygon",
-                        "coordinates": [coords_gcj]
-                    }
-                }
+                "geojson": {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [coords_gcj]}}
             }
             st.session_state.obstacles_list.append(new_obstacle)
             st.session_state.waypoints = []
@@ -419,7 +414,7 @@ def run_flight_monitor():
     with col2:
         st.metric("飞行速度", f"{st.session_state.flight_speed} m/s")
     
-    elapsed_time = st.session_state.flight_elapsed_time if hasattr(st.session_state, 'flight_elapsed_time') else 0
+    elapsed_time = 0
     if st.session_state.flight_start_time:
         elapsed_time = time.time() - st.session_state.flight_start_time
     with col3:
@@ -478,7 +473,7 @@ def run_flight_monitor():
 if page == "航线规划":
     st.header("✈️ 智能航线规划")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         new_height = st.number_input("🚁 飞行高度 (米)", min_value=5, max_value=200, value=st.session_state.flight_height, step=5)
         if new_height != st.session_state.flight_height:
@@ -493,6 +488,11 @@ if page == "航线规划":
         new_speed = st.number_input("⚡ 飞行速度 (m/s)", min_value=1.0, max_value=30.0, value=st.session_state.flight_speed, step=0.5)
         if new_speed != st.session_state.flight_speed:
             st.session_state.flight_speed = new_speed
+    with col4:
+        strategy = st.selectbox("🔄 绕行策略", ["向左绕行", "向右绕行", "最佳航线"], index=["向左绕行", "向右绕行", "最佳航线"].index(st.session_state.bypass_strategy))
+        if strategy != st.session_state.bypass_strategy:
+            st.session_state.bypass_strategy = strategy
+            st.session_state.waypoints = []
     
     colA, colB = st.columns(2)
     with colA:
@@ -545,7 +545,6 @@ if page == "航线规划":
             clear_all_obstacles()
             st.rerun()
     
-    # 显示地图
     draw_full_map()
     
     st.divider()
@@ -554,7 +553,7 @@ if page == "航线规划":
     with col_gen:
         if st.button("🚀 生成航线", use_container_width=True):
             if len(st.session_state.obstacles_list) > 0:
-                waypoints, messages = plan_route()
+                waypoints, messages = plan_route(st.session_state.bypass_strategy)
                 if len(waypoints) >= 2:
                     st.session_state.waypoints = waypoints
                     for msg in messages:
@@ -574,7 +573,7 @@ if page == "航线规划":
     
     with col_info:
         if st.session_state.waypoints:
-            st.info(f"📊 当前航线：{len(st.session_state.waypoints)} 个航点，安全半径 {st.session_state.safe_radius} 米，飞行高度 {st.session_state.flight_height} 米")
+            st.info(f"📊 当前航线：{len(st.session_state.waypoints)} 个航点，安全半径 {st.session_state.safe_radius} 米，飞行高度 {st.session_state.flight_height} 米，绕行策略：{st.session_state.bypass_strategy}")
         else:
             st.info("📌 点击「生成航线」规划飞行路径")
 
