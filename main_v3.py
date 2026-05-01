@@ -20,7 +20,6 @@ class Point:
         return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
 
 def point_in_polygon(point, polygon):
-    """射线法判断点是否在多边形内"""
     x, y = point.x, point.y
     inside = False
     n = len(polygon)
@@ -32,13 +31,11 @@ def point_in_polygon(point, polygon):
     return inside
 
 def segments_intersect(p1, p2, p3, p4):
-    """检测两条线段是否相交"""
     def ccw(A, B, C):
         return (C.y - A.y) * (B.x - A.x) > (B.y - A.y) * (C.x - A.x)
     return (ccw(p1, p3, p4) != ccw(p2, p3, p4)) and (ccw(p1, p2, p3) != ccw(p1, p2, p4))
 
 def line_intersects_polygon(line_start, line_end, polygon):
-    """检测线段是否与多边形相交"""
     if point_in_polygon(line_start, polygon) or point_in_polygon(line_end, polygon):
         return True
     for i in range(len(polygon)):
@@ -129,6 +126,10 @@ if "obstacles_list" not in st.session_state:
     else:
         st.session_state.obstacles_list = []
 
+# 存储生成的航线
+if "generated_waypoints" not in st.session_state:
+    st.session_state.generated_waypoints = None
+
 if "heartbeat_data" not in st.session_state:
     st.session_state.heartbeat_data = []
 if "last_received_time" not in st.session_state:
@@ -148,23 +149,23 @@ def load_all_obstacles():
 
 def clear_all_obstacles():
     st.session_state.obstacles_list = []
+    st.session_state.generated_waypoints = None  # 清除航线
     st.success("🗑️ 已清除所有障碍物")
 
 # ==================== 航线规划核心算法 ====================
 def plan_route(flight_height, safe_radius, strategy):
     """航线规划：飞跃/绕行"""
-    # 获取起点和终点的 WGS-84 坐标
     a_wgs_lat, a_wgs_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_wgs_lat, b_wgs_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     
     a_wgs = Point(a_wgs_lng, a_wgs_lat)
     b_wgs = Point(b_wgs_lng, b_wgs_lat)
     
-    waypoints = [[a_wgs_lat, a_wgs_lng]]  # 存储 [lat, lng] 格式
+    waypoints = [[a_wgs_lat, a_wgs_lng]]
+    messages = []
     
     for obs in st.session_state.obstacles_list:
         try:
-            # 获取障碍物多边形顶点并转换为 WGS-84
             coords_gcj = obs["geojson"]["geometry"]["coordinates"][0]
             polygon_wgs = []
             for coord in coords_gcj:
@@ -172,16 +173,13 @@ def plan_route(flight_height, safe_radius, strategy):
                 wgs_lat, wgs_lng = gcj02_to_wgs84(lat, lng)
                 polygon_wgs.append(Point(wgs_lng, wgs_lat))
             
-            # 检查是否需要处理该障碍物
             if line_intersects_polygon(a_wgs, b_wgs, polygon_wgs):
                 if flight_height > obs["height_m"] + safe_radius:
-                    # 飞跃：在中点添加航点
                     mid_lat = (a_wgs_lat + b_wgs_lat) / 2
                     mid_lng = (a_wgs_lng + b_wgs_lng) / 2
                     waypoints.append([mid_lat, mid_lng])
-                    st.info(f"✈️ {obs['name']}：飞行高度{flight_height}m > 障碍物高度{obs['height_m']}m，选择飞跃")
+                    messages.append(f"✈️ {obs['name']}：飞跃")
                 else:
-                    # 绕行：计算绕行点
                     center_x = sum(p.x for p in polygon_wgs) / len(polygon_wgs)
                     center_y = sum(p.y for p in polygon_wgs) / len(polygon_wgs)
                     vec_x = b_wgs.x - a_wgs.x
@@ -201,41 +199,42 @@ def plan_route(flight_height, safe_radius, strategy):
                     
                     if strategy == "向左绕行":
                         waypoints.append([left_y, left_x])
-                        st.info(f"🔄 {obs['name']}：选择向左绕行")
+                        messages.append(f"🔄 {obs['name']}：向左绕行")
                     elif strategy == "向右绕行":
                         waypoints.append([right_y, right_x])
-                        st.info(f"🔄 {obs['name']}：选择向右绕行")
-                    else:  # 最佳航线
+                        messages.append(f"🔄 {obs['name']}：向右绕行")
+                    else:
                         left_point = Point(left_x, left_y)
                         right_point = Point(right_x, right_y)
                         dist_left = left_point.distance(a_wgs) + left_point.distance(b_wgs)
                         dist_right = right_point.distance(a_wgs) + right_point.distance(b_wgs)
                         if dist_left < dist_right:
                             waypoints.append([left_y, left_x])
-                            st.info(f"⭐ {obs['name']}：选择最佳航线（向左）")
+                            messages.append(f"⭐ {obs['name']}：最佳航线（向左）")
                         else:
                             waypoints.append([right_y, right_x])
-                            st.info(f"⭐ {obs['name']}：选择最佳航线（向右）")
+                            messages.append(f"⭐ {obs['name']}：最佳航线（向右）")
         except Exception as e:
-            st.warning(f"处理障碍物 {obs.get('name', '未知')} 时出错: {str(e)}")
+            messages.append(f"⚠️ 处理 {obs.get('name', '障碍物')} 时出错")
             continue
     
-    # 添加终点
     waypoints.append([b_wgs_lat, b_wgs_lng])
-    return waypoints
+    return waypoints, messages
 
 # ==================== 地图绘制函数 ====================
-def draw_obstacle_map():
-    """显示地图并处理多边形绘制"""
+def draw_full_map():
+    """显示完整地图（障碍物 + 航线）"""
     a_wgs = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_wgs = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     center = [(a_wgs[0]+b_wgs[0])/2, (a_wgs[1]+b_wgs[1])/2]
 
     m = folium.Map(location=center, zoom_start=16, tiles="OpenStreetMap")
-    folium.Marker(location=a_wgs, popup="起点 A", icon=folium.Icon(color="green")).add_to(m)
-    folium.Marker(location=b_wgs, popup="终点 B", icon=folium.Icon(color="red")).add_to(m)
-
-    # 显示现有障碍物
+    
+    # 起点和终点标记
+    folium.Marker(location=a_wgs, popup="起点 A", icon=folium.Icon(color="green", icon="play")).add_to(m)
+    folium.Marker(location=b_wgs, popup="终点 B", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+    
+    # 绘制障碍物
     for obs in st.session_state.obstacles_list:
         try:
             coords_gcj = obs["geojson"]["geometry"]["coordinates"][0]
@@ -252,9 +251,32 @@ def draw_obstacle_map():
                 fillOpacity=0.3,
                 popup=f"{obs['name']}<br>高度: {obs['height_m']} m"
             ).add_to(m)
-        except Exception as e:
+        except:
             continue
-
+    
+    # 绘制已生成的航线
+    if st.session_state.generated_waypoints and len(st.session_state.generated_waypoints) >= 2:
+        folium.PolyLine(
+            st.session_state.generated_waypoints,
+            color="blue",
+            weight=5,
+            opacity=0.8,
+            popup="规划航线"
+        ).add_to(m)
+        
+        # 添加航点标记
+        for i, wp in enumerate(st.session_state.generated_waypoints):
+            if 0 < i < len(st.session_state.generated_waypoints) - 1:
+                folium.CircleMarker(
+                    location=wp,
+                    radius=6,
+                    color="blue",
+                    fill=True,
+                    fill_color="white",
+                    popup=f"航点 {i}"
+                ).add_to(m)
+    
+    # 添加绘图控件
     Draw(export=True, draw_options={"polygon": True, "polyline": False, "rectangle": False,
                                    "circle": False, "marker": False, "circlemarker": False},
          edit_options={"edit": True, "remove": True}).add_to(m)
@@ -285,58 +307,8 @@ def draw_obstacle_map():
                 }
             }
             st.session_state.obstacles_list.append(new_obstacle)
+            st.session_state.generated_waypoints = None  # 新障碍物后清除旧航线
             st.rerun()
-
-def plot_route_on_map(waypoints):
-    """在地图上绘制规划好的航线"""
-    if not waypoints or len(waypoints) < 2:
-        st.warning("⚠️ 航线生成失败，请检查障碍物设置")
-        return
-    
-    a_wgs = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
-    b_wgs = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
-    center = [(a_wgs[0]+b_wgs[0])/2, (a_wgs[1]+b_wgs[1])/2]
-
-    m = folium.Map(location=center, zoom_start=16, tiles="OpenStreetMap")
-    folium.Marker(location=a_wgs, popup="起点 A", icon=folium.Icon(color="green")).add_to(m)
-    folium.Marker(location=b_wgs, popup="终点 B", icon=folium.Icon(color="red")).add_to(m)
-
-    # 绘制航线（连线所有航点）
-    folium.PolyLine(waypoints, color="blue", weight=4, opacity=0.8, popup="规划航线").add_to(m)
-    
-    # 在航点上添加标记
-    for i, wp in enumerate(waypoints):
-        if i == 0 or i == len(waypoints)-1:
-            continue  # 起点终点已有标记
-        folium.CircleMarker(
-            location=wp,
-            radius=5,
-            color="blue",
-            fill=True,
-            popup=f"航点 {i}"
-        ).add_to(m)
-
-    # 显示障碍物
-    for obs in st.session_state.obstacles_list:
-        try:
-            coords_gcj = obs["geojson"]["geometry"]["coordinates"][0]
-            coords_wgs = []
-            for coord in coords_gcj:
-                lng, lat = coord[0], coord[1]
-                wgs_lat, wgs_lng = gcj02_to_wgs84(lat, lng)
-                coords_wgs.append([wgs_lng, wgs_lat])
-            
-            folium.Polygon(
-                locations=[[lat, lng] for lng, lat in coords_wgs],
-                color="orange",
-                weight=2,
-                fillOpacity=0.2,
-                popup=f"{obs['name']}<br>高度: {obs['height_m']} m"
-            ).add_to(m)
-        except:
-            continue
-
-    st_folium(m, width=800, height=500)
 
 # ==================== 心跳监控 ====================
 def heartbeat_monitor():
@@ -381,12 +353,14 @@ if page == "航线规划":
         lon_a = st.number_input("起点 A 经度 (GCJ-02)", value=st.session_state.point_a_gcj[1], format="%.6f")
         if st.button("📍 设置 A 点"):
             st.session_state.point_a_gcj = (lat_a, lon_a)
+            st.session_state.generated_waypoints = None
             st.rerun()
     with colB:
         lat_b = st.number_input("终点 B 纬度 (GCJ-02)", value=st.session_state.point_b_gcj[0], format="%.6f")
         lon_b = st.number_input("终点 B 经度 (GCJ-02)", value=st.session_state.point_b_gcj[1], format="%.6f")
         if st.button("📍 设置 B 点"):
             st.session_state.point_b_gcj = (lat_b, lon_b)
+            st.session_state.generated_waypoints = None
             st.rerun()
 
     st.divider()
@@ -400,10 +374,13 @@ if page == "航线规划":
                 st.write(f"**{obs['name']}**")
             with col_h2:
                 new_h = st.number_input(f"高度 (m)", value=float(obs["height_m"]), key=f"h_{idx}", step=1.0)
-                st.session_state.obstacles_list[idx]["height_m"] = new_h
+                if new_h != st.session_state.obstacles_list[idx]["height_m"]:
+                    st.session_state.obstacles_list[idx]["height_m"] = new_h
+                    st.session_state.generated_waypoints = None
             with col_h3:
                 if st.button("❌ 删除", key=f"del_{idx}"):
                     st.session_state.obstacles_list.pop(idx)
+                    st.session_state.generated_waypoints = None
                     st.rerun()
     else:
         st.info("暂无障碍物，请在地图上绘制多边形进行圈选。")
@@ -415,24 +392,36 @@ if page == "航线规划":
     with col_s2:
         if st.button("📂 加载障碍物"):
             load_all_obstacles()
+            st.session_state.generated_waypoints = None
+            st.rerun()
     with col_s3:
         if st.button("🗑️ 清除全部障碍物"):
             clear_all_obstacles()
+            st.rerun()
 
-    draw_obstacle_map()
+    # 显示地图
+    draw_full_map()
 
     st.divider()
     st.subheader("✈️ 航线生成与展示")
+    
     if st.button("🚀 生成航线"):
-        if st.session_state.obstacles_list:
-            waypoints = plan_route(st.session_state.flight_height, st.session_state.safe_radius, strategy)
+        if len(st.session_state.obstacles_list) > 0:
+            waypoints, messages = plan_route(st.session_state.flight_height, st.session_state.safe_radius, strategy)
             if len(waypoints) >= 2:
-                plot_route_on_map(waypoints)
+                st.session_state.generated_waypoints = waypoints
+                for msg in messages:
+                    st.info(msg)
                 st.success(f"✅ 航线已生成（共 {len(waypoints)} 个航点，蓝色线条为规划路径）")
+                st.rerun()
             else:
                 st.warning("⚠️ 航线生成失败，请检查障碍物设置")
         else:
             st.warning("⚠️ 请先添加障碍物后再生成航线")
+    
+    # 显示航线信息
+    if st.session_state.generated_waypoints and len(st.session_state.generated_waypoints) >= 2:
+        st.caption(f"当前航线航点数: {len(st.session_state.generated_waypoints)}")
 
 else:
     heartbeat_monitor()
