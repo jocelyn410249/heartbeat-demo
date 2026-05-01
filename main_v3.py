@@ -5,7 +5,6 @@ import time
 import json
 import os
 import math
-import random
 from datetime import datetime
 from streamlit_folium import st_folium
 import folium
@@ -167,15 +166,16 @@ def clear_all_obstacles():
     st.session_state.waypoints = []
     st.success("🗑️ 已清除所有障碍物")
 
-# ==================== 航线规划（支持绕行策略）====================
+# ==================== 航线规划（绕过所有障碍物）====================
 def plan_route(strategy):
-    """航线规划：根据策略选择向左/向右/最佳绕行"""
+    """航线规划：绕过所有与AB连线相交的障碍物"""
     a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     
     waypoints = [[a_lat, a_lng]]
     messages = []
-    safe_radius_deg = st.session_state.safe_radius * 0.000009
+    # 安全半径转经纬度（米转度，约 1度=111000米）
+    safe_radius_deg = st.session_state.safe_radius / 111000
     
     for idx, obs in enumerate(st.session_state.obstacles_list):
         try:
@@ -186,76 +186,76 @@ def plan_route(strategy):
                 wgs_lat, wgs_lng = gcj02_to_wgs84(lat, lng)
                 polygon.append([wgs_lng, wgs_lat])
             
-            line_start = [a_lng, a_lat]
-            line_end = [b_lng, b_lat]
+            # 检查当前规划的路径是否与障碍物相交
+            current_start = waypoints[-1]
+            current_end = [b_lat, b_lng]
+            line_start = [current_start[1], current_start[0]]  # [lng, lat]
+            line_end = [current_end[1], current_end[0]]
             
             if line_intersects_polygon(line_start, line_end, polygon):
                 obs_height = obs.get("height_m", 10)
                 
-                if st.session_state.flight_height > obs_height + st.session_state.safe_radius:
-                    # 飞跃：在AB之间添加一个中点
-                    mid_lat = (a_lat + b_lat) / 2
-                    mid_lng = (a_lng + b_lng) / 2
-                    waypoints.append([mid_lat, mid_lng])
-                    messages.append(f"✈️ {obs['name']}：飞跃（高度{st.session_state.flight_height}m > {obs_height}m）")
-                else:
-                    # 需要绕行
-                    center_lng = sum(p[0] for p in polygon) / len(polygon)
-                    center_lat = sum(p[1] for p in polygon) / len(polygon)
-                    
-                    # 计算AB方向向量
-                    dx = b_lng - a_lng
-                    dy = b_lat - a_lat
-                    length = math.sqrt(dx*dx + dy*dy)
-                    if length > 0:
-                        dx /= length
-                        dy /= length
-                    
-                    # 垂直向量（左右方向）
-                    perp_x = -dy
-                    perp_y = dx
-                    
-                    # 绕行距离 = 安全半径 * 3 转经纬度
-                    offset = safe_radius_deg * 3
-                    
-                    left_lng = center_lng - perp_x * offset
-                    left_lat = center_lat - perp_y * offset
-                    right_lng = center_lng + perp_x * offset
-                    right_lat = center_lat + perp_y * offset
-                    
-                    def calc_total_dist(lat, lng):
-                        d1 = haversine_distance(a_lat, a_lng, lat, lng)
-                        d2 = haversine_distance(b_lat, b_lng, lat, lng)
-                        return d1 + d2
-                    
-                    left_dist = calc_total_dist(left_lat, left_lng)
-                    right_dist = calc_total_dist(right_lat, right_lng)
-                    
-                    # 根据策略选择绕行方向
-                    if strategy == "向左绕行":
+                # 计算障碍物中心点
+                center_lng = sum(p[0] for p in polygon) / len(polygon)
+                center_lat = sum(p[1] for p in polygon) / len(polygon)
+                
+                # 计算从当前点到B点的方向
+                dx = b_lng - current_start[1]
+                dy = b_lat - current_start[0]
+                length = math.sqrt(dx*dx + dy*dy)
+                if length > 0:
+                    dx /= length
+                    dy /= length
+                
+                # 垂直向量（左右方向）
+                perp_x = -dy
+                perp_y = dx
+                
+                # 绕行距离 = 安全半径 * 5
+                offset = safe_radius_deg * 5
+                
+                left_lng = center_lng - perp_x * offset
+                left_lat = center_lat - perp_y * offset
+                right_lng = center_lng + perp_x * offset
+                right_lat = center_lat + perp_y * offset
+                
+                def calc_total_dist(lat, lng):
+                    d1 = haversine_distance(current_start[0], current_start[1], lat, lng)
+                    d2 = haversine_distance(b_lat, b_lng, lat, lng)
+                    return d1 + d2
+                
+                left_dist = calc_total_dist(left_lat, left_lng)
+                right_dist = calc_total_dist(right_lat, right_lng)
+                
+                # 根据策略选择绕行方向
+                if strategy == "向左绕行":
+                    waypoints.append([left_lat, left_lng])
+                    messages.append(f"🔄 {obs['name']}：向左绕行（安全半径 {st.session_state.safe_radius}m）")
+                elif strategy == "向右绕行":
+                    waypoints.append([right_lat, right_lng])
+                    messages.append(f"🔄 {obs['name']}：向右绕行（安全半径 {st.session_state.safe_radius}m）")
+                else:  # 最佳航线
+                    if left_dist <= right_dist:
                         waypoints.append([left_lat, left_lng])
-                        messages.append(f"🔄 {obs['name']}：向左绕行（高度{st.session_state.flight_height}m ≤ {obs_height}m）")
-                    elif strategy == "向右绕行":
+                        messages.append(f"⭐ {obs['name']}：最佳航线-向左绕行")
+                    else:
                         waypoints.append([right_lat, right_lng])
-                        messages.append(f"🔄 {obs['name']}：向右绕行（高度{st.session_state.flight_height}m ≤ {obs_height}m）")
-                    else:  # 最佳航线
-                        if left_dist <= right_dist:
-                            waypoints.append([left_lat, left_lng])
-                            messages.append(f"⭐ {obs['name']}：最佳航线-向左绕行（路径更短）")
-                        else:
-                            waypoints.append([right_lat, right_lng])
-                            messages.append(f"⭐ {obs['name']}：最佳航线-向右绕行（路径更短）")
+                        messages.append(f"⭐ {obs['name']}：最佳航线-向右绕行")
         except Exception as e:
             messages.append(f"⚠️ 处理障碍物出错: {str(e)[:50]}")
             continue
     
     waypoints.append([b_lat, b_lng])
     
-    # 去重
+    # 去重（移除距离太近的连续点）
     unique_wp = []
     for wp in waypoints:
-        if not unique_wp or (abs(wp[0]-unique_wp[-1][0]) > 1e-7 or abs(wp[1]-unique_wp[-1][1]) > 1e-7):
+        if not unique_wp:
             unique_wp.append(wp)
+        else:
+            dist = haversine_distance(unique_wp[-1][0], unique_wp[-1][1], wp[0], wp[1])
+            if dist > 5:  # 距离大于5米才添加
+                unique_wp.append(wp)
     
     return unique_wp, messages
 
@@ -489,7 +489,8 @@ if page == "航线规划":
         if new_speed != st.session_state.flight_speed:
             st.session_state.flight_speed = new_speed
     with col4:
-        strategy = st.selectbox("🔄 绕行策略", ["向左绕行", "向右绕行", "最佳航线"], index=["向左绕行", "向右绕行", "最佳航线"].index(st.session_state.bypass_strategy))
+        strategy = st.selectbox("🔄 绕行策略", ["向左绕行", "向右绕行", "最佳航线"], 
+                                index=["向左绕行", "向右绕行", "最佳航线"].index(st.session_state.bypass_strategy))
         if strategy != st.session_state.bypass_strategy:
             st.session_state.bypass_strategy = strategy
             st.session_state.waypoints = []
@@ -573,7 +574,7 @@ if page == "航线规划":
     
     with col_info:
         if st.session_state.waypoints:
-            st.info(f"📊 当前航线：{len(st.session_state.waypoints)} 个航点，安全半径 {st.session_state.safe_radius} 米，飞行高度 {st.session_state.flight_height} 米，绕行策略：{st.session_state.bypass_strategy}")
+            st.info(f"📊 当前航线：{len(st.session_state.waypoints)} 个航点，安全半径 {st.session_state.safe_radius} 米，绕行策略：{st.session_state.bypass_strategy}")
         else:
             st.info("📌 点击「生成航线」规划飞行路径")
 
