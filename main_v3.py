@@ -94,7 +94,6 @@ def line_intersects_polygon(line_start, line_end, polygon):
             return True
     return False
 
-# 计算两点间距离（米）
 def haversine_distance(lat1, lng1, lat2, lng2):
     R = 6371000
     phi1 = math.radians(lat1)
@@ -120,7 +119,7 @@ if "flight_height" not in st.session_state:
 if "safe_radius" not in st.session_state:
     st.session_state.safe_radius = 5.0
 if "flight_speed" not in st.session_state:
-    st.session_state.flight_speed = 8.5  # 米/秒
+    st.session_state.flight_speed = 8.5
 
 if "obstacles_list" not in st.session_state:
     OBSTACLE_FILE = "obstacles_full.json"
@@ -134,9 +133,8 @@ if "obstacles_list" not in st.session_state:
         st.session_state.obstacles_list = []
 
 if "waypoints" not in st.session_state:
-    st.session_state.waypoints = []  # 航线航点 [lat, lng]
+    st.session_state.waypoints = []
 
-# 飞行监控状态
 if "is_flying" not in st.session_state:
     st.session_state.is_flying = False
 if "current_wp_index" not in st.session_state:
@@ -169,13 +167,12 @@ def clear_all_obstacles():
 
 # ==================== 航线规划 ====================
 def plan_route():
-    """航线规划：生成从A到B的航点列表"""
     a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     
     waypoints = [[a_lat, a_lng]]
     messages = []
-    safe_radius_deg = st.session_state.safe_radius * 0.000009  # 安全半径转经纬度
+    safe_radius_deg = st.session_state.safe_radius * 0.000009
     
     for idx, obs in enumerate(st.session_state.obstacles_list):
         try:
@@ -195,11 +192,9 @@ def plan_route():
                 if st.session_state.flight_height > obs_height + st.session_state.safe_radius:
                     messages.append(f"✈️ {obs['name']}：飞跃")
                 else:
-                    # 计算绕行点（沿多边形边缘）
                     center_lng = sum(p[0] for p in polygon) / len(polygon)
                     center_lat = sum(p[1] for p in polygon) / len(polygon)
                     
-                    # 计算从A到B的方向
                     dx = b_lng - a_lng
                     dy = b_lat - a_lat
                     length = math.sqrt(dx*dx + dy*dy)
@@ -207,17 +202,14 @@ def plan_route():
                         dx /= length
                         dy /= length
                     
-                    # 垂直方向
                     perp_x = -dy
                     perp_y = dx
                     
-                    # 绕行点
                     left_lng = center_lng - perp_x * safe_radius_deg * 3
                     left_lat = center_lat - perp_y * safe_radius_deg * 3
                     right_lng = center_lng + perp_x * safe_radius_deg * 3
                     right_lat = center_lat + perp_y * safe_radius_deg * 3
                     
-                    # 计算到起点终点的总距离
                     def calc_dist(lat, lng):
                         d1 = haversine_distance(a_lat, a_lng, lat, lng)
                         d2 = haversine_distance(b_lat, b_lng, lat, lng)
@@ -238,7 +230,6 @@ def plan_route():
     
     waypoints.append([b_lat, b_lng])
     
-    # 去重
     unique_wp = []
     for wp in waypoints:
         if not unique_wp or (abs(wp[0]-unique_wp[-1][0]) > 1e-7 or abs(wp[1]-unique_wp[-1][1]) > 1e-7):
@@ -247,7 +238,6 @@ def plan_route():
     return unique_wp, messages
 
 def calculate_total_distance(waypoints):
-    """计算航线总距离"""
     total = 0
     for i in range(len(waypoints)-1):
         total += haversine_distance(waypoints[i][0], waypoints[i][1], waypoints[i+1][0], waypoints[i+1][1])
@@ -255,16 +245,27 @@ def calculate_total_distance(waypoints):
 
 # ==================== 地图绘制 ====================
 def draw_full_map():
+    """绘制完整地图（障碍物 + 航线）"""
     a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     center = [(a_lat + b_lat) / 2, (a_lng + b_lng) / 2]
     
+    # 创建地图
     m = folium.Map(location=center, zoom_start=16, tiles="OpenStreetMap")
     
-    folium.Marker([a_lat, a_lng], popup="起点 A", icon=folium.Icon(color="green", icon="play")).add_to(m)
-    folium.Marker([b_lat, b_lng], popup="终点 B", icon=folium.Icon(color="red", icon="flag")).add_to(m)
+    # 起点和终点标记
+    folium.Marker(
+        [a_lat, a_lng], 
+        popup="起点 A", 
+        icon=folium.Icon(color="green", icon="play")
+    ).add_to(m)
+    folium.Marker(
+        [b_lat, b_lng], 
+        popup="终点 B", 
+        icon=folium.Icon(color="red", icon="flag")
+    ).add_to(m)
     
-    # 障碍物
+    # 绘制障碍物
     for obs in st.session_state.obstacles_list:
         try:
             coords_gcj = obs["geojson"]["geometry"]["coordinates"][0]
@@ -284,8 +285,9 @@ def draw_full_map():
         except:
             continue
     
-    # 航线
+    # 绘制航线（重要：必须在添加绘图控件之前添加，否则会被覆盖）
     if st.session_state.waypoints and len(st.session_state.waypoints) >= 2:
+        # 航线连线
         folium.PolyLine(
             st.session_state.waypoints,
             color="blue",
@@ -294,15 +296,35 @@ def draw_full_map():
             popup="规划航线"
         ).add_to(m)
         
+        # 中间航点标记
         for i, wp in enumerate(st.session_state.waypoints[1:-1]):
-            folium.CircleMarker(wp, radius=5, color="blue", fill=True, fill_color="white", popup=f"航点 {i+1}").add_to(m)
+            folium.CircleMarker(
+                wp,
+                radius=5,
+                color="blue",
+                fill=True,
+                fill_color="white",
+                popup=f"航点 {i+1}"
+            ).add_to(m)
     
-    Draw(export=True, draw_options={"polygon": True, "polyline": False, "rectangle": False,
-                                   "circle": False, "marker": False, "circlemarker": False},
-         edit_options={"edit": True, "remove": True}).add_to(m)
+    # 添加绘图控件（最后添加，避免覆盖航线）
+    Draw(
+        export=True,
+        draw_options={
+            "polygon": True,
+            "polyline": False,
+            "rectangle": False,
+            "circle": False,
+            "marker": False,
+            "circlemarker": False
+        },
+        edit_options={"edit": True, "remove": True}
+    ).add_to(m)
     
+    # 显示地图并获取绘制数据
     output = st_folium(m, width=800, height=500, returned_objects=["last_active_drawing"])
     
+    # 处理新绘制的多边形
     if output and output.get("last_active_drawing"):
         drawing = output["last_active_drawing"]
         if drawing and drawing["geometry"]["type"] == "Polygon":
@@ -317,11 +339,19 @@ def draw_full_map():
                 "id": len(st.session_state.obstacles_list),
                 "name": f"障碍物_{len(st.session_state.obstacles_list)+1}",
                 "height_m": 10.0,
-                "geojson": {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [coords_gcj]}}
+                "geojson": {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [coords_gcj]
+                    }
+                }
             }
             st.session_state.obstacles_list.append(new_obstacle)
             st.session_state.waypoints = []
             st.rerun()
+    
+    return m
 
 # ==================== 飞行监控 ====================
 def start_flight():
@@ -331,7 +361,6 @@ def start_flight():
     st.session_state.is_flying = True
     st.session_state.current_wp_index = 0
     st.session_state.flight_start_time = time.time()
-    st.session_state.flight_elapsed_time = 0
     st.session_state.total_flight_distance = calculate_total_distance(st.session_state.waypoints)
     st.session_state.battery = 100
     st.session_state.monitor_messages = []
@@ -352,21 +381,15 @@ def stop_flight():
     st.session_state.monitor_messages.append("🛬 飞行任务结束")
 
 def update_flight():
-    """更新飞行状态"""
-    if not st.session_state.is_flying:
+    if not st.session_state.is_flying or st.session_state.flight_start_time is None:
         return
     
     elapsed = time.time() - st.session_state.flight_start_time
-    st.session_state.flight_elapsed_time = elapsed
-    
-    # 计算已飞行距离
     traveled_distance = st.session_state.flight_speed * elapsed
     total_distance = st.session_state.total_flight_distance
     
-    # 更新电量
     st.session_state.battery = max(0, 100 - (elapsed / (total_distance / st.session_state.flight_speed + 5)) * 100)
     
-    # 计算当前航点
     accumulated = 0
     for i in range(len(st.session_state.waypoints) - 1):
         segment_dist = haversine_distance(
@@ -378,30 +401,27 @@ def update_flight():
             break
         accumulated += segment_dist
     
-    # 完成任务
     if traveled_distance >= total_distance:
         st.session_state.is_flying = False
         st.session_state.current_wp_index = len(st.session_state.waypoints) - 1
         st.session_state.monitor_messages.append("✅ 飞行任务完成")
 
 def run_flight_monitor():
-    """飞行监控界面"""
     st.subheader("📡 飞行实时画面 - 任务执行监控")
     
-    # 更新飞行状态
     update_flight()
     
-    # 监控仪表盘
     col1, col2, col3, col4, col5, col6 = st.columns(6)
     
     current_waypoint = f"{st.session_state.current_wp_index + 1}/{len(st.session_state.waypoints)}"
     with col1:
         st.metric("当前航点", current_waypoint)
-    
     with col2:
         st.metric("飞行速度", f"{st.session_state.flight_speed} m/s")
     
-    elapsed_time = st.session_state.flight_elapsed_time if st.session_state.flight_start_time else 0
+    elapsed_time = st.session_state.flight_elapsed_time if hasattr(st.session_state, 'flight_elapsed_time') else 0
+    if st.session_state.flight_start_time:
+        elapsed_time = time.time() - st.session_state.flight_start_time
     with col3:
         st.metric("已用时间", f"{int(elapsed_time // 60):02d}:{int(elapsed_time % 60):02d}")
     
@@ -415,18 +435,11 @@ def run_flight_monitor():
         st.metric("预计到达", f"{int(remaining_time // 60):02d}:{int(remaining_time % 60):02d}")
     
     with col6:
-        battery_color = "normal"
-        if st.session_state.battery < 20:
-            battery_color = "red"
-        elif st.session_state.battery < 50:
-            battery_color = "orange"
-        st.metric("电量模拟", f"{int(st.session_state.battery)}%", delta_color=battery_color)
+        st.metric("电量模拟", f"{int(st.session_state.battery)}%")
     
-    # 进度条
     progress = (traveled / st.session_state.total_flight_distance) if st.session_state.total_flight_distance > 0 else 0
     st.progress(min(1.0, progress))
     
-    # 通信链路状态
     st.markdown("### 通信链路拓扑与数据流")
     link_col1, link_col2, link_col3 = st.columns(3)
     with link_col1:
@@ -436,11 +449,9 @@ def run_flight_monitor():
     with link_col3:
         st.success("✅ FCU在线")
     
-    # 消息日志
     st.markdown("### 飞行日志")
-    log_placeholder = st.empty()
+    st.text_area("消息", "\n".join(st.session_state.monitor_messages[-10:]), height=150, disabled=True)
     
-    # 控制按钮
     col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
     with col_btn1:
         if st.button("🚀 开始飞行", disabled=st.session_state.is_flying):
@@ -459,10 +470,6 @@ def run_flight_monitor():
             stop_flight()
             st.rerun()
     
-    # 显示最近10条消息
-    log_placeholder.text_area("消息", "\n".join(st.session_state.monitor_messages[-10:]), height=150, disabled=True)
-    
-    # 位置更新导致重绘，每0.5秒刷新一次
     if st.session_state.is_flying:
         time.sleep(0.5)
         st.rerun()
@@ -538,6 +545,7 @@ if page == "航线规划":
             clear_all_obstacles()
             st.rerun()
     
+    # 显示地图
     draw_full_map()
     
     st.divider()
@@ -553,15 +561,16 @@ if page == "航线规划":
                         st.info(msg)
                     total_dist = calculate_total_distance(waypoints)
                     st.success(f"✅ 航线已生成！共 {len(waypoints)} 个航点，总距离 {int(total_dist)} 米")
+                    st.rerun()
                 else:
                     st.warning("⚠️ 航线生成失败")
             else:
-                # 无障碍物时直接从A到B
                 a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
                 b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
                 st.session_state.waypoints = [[a_lat, a_lng], [b_lat, b_lng]]
                 total_dist = haversine_distance(a_lat, a_lng, b_lat, b_lng)
                 st.success(f"✅ 无障碍物，航线已生成！总距离 {int(total_dist)} 米")
+                st.rerun()
     
     with col_info:
         if st.session_state.waypoints:
