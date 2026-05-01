@@ -82,14 +82,13 @@ def segments_intersect(p1, p2, p3, p4):
     return (ccw(p1[0], p1[1], p3[0], p3[1], p4[0], p4[1]) != ccw(p2[0], p2[1], p3[0], p3[1], p4[0], p4[1])) and \
            (ccw(p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]) != ccw(p1[0], p1[1], p2[0], p2[1], p4[0], p4[1]))
 
-def line_intersects_polygon(line_start, line_end, polygon):
-    if point_in_polygon(line_start[0], line_start[1], polygon) or \
-       point_in_polygon(line_end[0], line_end[1], polygon):
+def line_intersects_polygon(p1, p2, polygon):
+    if point_in_polygon(p1[0], p1[1], polygon) or point_in_polygon(p2[0], p2[1], polygon):
         return True
     for i in range(len(polygon)):
         p3 = polygon[i]
         p4 = polygon[(i+1) % len(polygon)]
-        if segments_intersect(line_start, line_end, p3, p4):
+        if segments_intersect(p1, p2, p3, p4):
             return True
     return False
 
@@ -166,7 +165,7 @@ def clear_all_obstacles():
     st.session_state.waypoints = []
     st.success("🗑️ 已清除所有障碍物")
 
-# ==================== 航线规划（绕过所有障碍物）====================
+# ==================== 航线规划（强制绕过所有障碍物）====================
 def plan_route(strategy):
     """航线规划：绕过所有与AB连线相交的障碍物"""
     a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
@@ -174,7 +173,7 @@ def plan_route(strategy):
     
     waypoints = [[a_lat, a_lng]]
     messages = []
-    # 安全半径转经纬度（米转度，约 1度=111000米）
+    # 安全半径转经纬度（1度约111km）
     safe_radius_deg = st.session_state.safe_radius / 111000
     
     for idx, obs in enumerate(st.session_state.obstacles_list):
@@ -184,18 +183,18 @@ def plan_route(strategy):
             for coord in coords_gcj:
                 lng, lat = coord[0], coord[1]
                 wgs_lat, wgs_lng = gcj02_to_wgs84(lat, lng)
-                polygon.append([wgs_lng, wgs_lat])
+                polygon.append([wgs_lng, wgs_lat])  # [lng, lat]
             
-            # 检查当前规划的路径是否与障碍物相交
+            # 当前起点和终点
             current_start = waypoints[-1]
-            current_end = [b_lat, b_lng]
-            line_start = [current_start[1], current_start[0]]  # [lng, lat]
-            line_end = [current_end[1], current_end[0]]
+            # 检查从当前起点到终点的直线是否与障碍物相交
+            p1 = [current_start[1], current_start[0]]  # [lng, lat]
+            p2 = [b_lng, b_lat]
             
-            if line_intersects_polygon(line_start, line_end, polygon):
-                obs_height = obs.get("height_m", 10)
-                
-                # 计算障碍物中心点
+            intersect = line_intersects_polygon(p1, p2, polygon)
+            
+            if intersect:
+                # 计算绕行点
                 center_lng = sum(p[0] for p in polygon) / len(polygon)
                 center_lat = sum(p[1] for p in polygon) / len(polygon)
                 
@@ -211,8 +210,8 @@ def plan_route(strategy):
                 perp_x = -dy
                 perp_y = dx
                 
-                # 绕行距离 = 安全半径 * 5
-                offset = safe_radius_deg * 5
+                # 绕行距离 = 安全半径 * 8（确保明显绕过）
+                offset = safe_radius_deg * 8
                 
                 left_lng = center_lng - perp_x * offset
                 left_lat = center_lat - perp_y * offset
@@ -227,35 +226,39 @@ def plan_route(strategy):
                 left_dist = calc_total_dist(left_lat, left_lng)
                 right_dist = calc_total_dist(right_lat, right_lng)
                 
-                # 根据策略选择绕行方向
                 if strategy == "向左绕行":
                     waypoints.append([left_lat, left_lng])
-                    messages.append(f"🔄 {obs['name']}：向左绕行（安全半径 {st.session_state.safe_radius}m）")
+                    messages.append(f"🔄 {obs['name']}：向左绕行")
                 elif strategy == "向右绕行":
                     waypoints.append([right_lat, right_lng])
-                    messages.append(f"🔄 {obs['name']}：向右绕行（安全半径 {st.session_state.safe_radius}m）")
-                else:  # 最佳航线
+                    messages.append(f"🔄 {obs['name']}：向右绕行")
+                else:
                     if left_dist <= right_dist:
                         waypoints.append([left_lat, left_lng])
-                        messages.append(f"⭐ {obs['name']}：最佳航线-向左绕行")
+                        messages.append(f"⭐ {obs['name']}：最佳航线-向左")
                     else:
                         waypoints.append([right_lat, right_lng])
-                        messages.append(f"⭐ {obs['name']}：最佳航线-向右绕行")
+                        messages.append(f"⭐ {obs['name']}：最佳航线-向右")
+            else:
+                messages.append(f"✅ {obs['name']}：不在航线上，无需绕行")
         except Exception as e:
-            messages.append(f"⚠️ 处理障碍物出错: {str(e)[:50]}")
+            messages.append(f"⚠️ 处理 {obs.get('name', '障碍物')} 出错: {str(e)[:50]}")
             continue
     
     waypoints.append([b_lat, b_lng])
     
-    # 去重（移除距离太近的连续点）
+    # 去重
     unique_wp = []
     for wp in waypoints:
         if not unique_wp:
             unique_wp.append(wp)
         else:
             dist = haversine_distance(unique_wp[-1][0], unique_wp[-1][1], wp[0], wp[1])
-            if dist > 5:  # 距离大于5米才添加
+            if dist > 3:
                 unique_wp.append(wp)
+    
+    if len(unique_wp) > 2:
+        messages.append(f"📊 航线已规划，共 {len(unique_wp)} 个航点")
     
     return unique_wp, messages
 
@@ -314,7 +317,7 @@ def draw_full_map():
                 color="blue",
                 fill=True,
                 fill_color="white",
-                popup=f"航点 {i+1}"
+                popup=f"绕行点 {i+1}"
             ).add_to(m)
     
     Draw(
@@ -504,8 +507,8 @@ if page == "航线规划":
             st.session_state.waypoints = []
             st.rerun()
     with colB:
-        lat_b = st.number_input("终点 B 纬度 (GCJ-02)", value=st.session_state.point_b_gcj[0], format="%.6f")
-        lon_b = st.number_input("终点 B 经度 (GCJ-02)", value=st.session_state.point_b_gcj[1], format="%.6f")
+        lat_b = st.number_input("起点 B 纬度 (GCJ-02)", value=st.session_state.point_b_gcj[0], format="%.6f")
+        lon_b = st.number_input("起点 B 经度 (GCJ-02)", value=st.session_state.point_b_gcj[1], format="%.6f")
         if st.button("📍 设置 B 点"):
             st.session_state.point_b_gcj = (lat_b, lon_b)
             st.session_state.waypoints = []
@@ -558,7 +561,12 @@ if page == "航线规划":
                 if len(waypoints) >= 2:
                     st.session_state.waypoints = waypoints
                     for msg in messages:
-                        st.info(msg)
+                        if "无需绕行" in msg:
+                            st.info(msg)
+                        elif "绕行" in msg:
+                            st.warning(msg)
+                        else:
+                            st.info(msg)
                     total_dist = calculate_total_distance(waypoints)
                     st.success(f"✅ 航线已生成！共 {len(waypoints)} 个航点，总距离 {int(total_dist)} 米")
                     st.rerun()
