@@ -66,17 +66,6 @@ def haversine_distance(lat1, lng1, lat2, lng2):
     a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# 简单的点是否在多边形内
-def point_in_polygon(px, py, polygon):
-    inside = False
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i+1)%n]
-        if ((y1 > py) != (y2 > py)) and (px < (x2-x1)*(py-y1)/(y2-y1)+x1):
-            inside = not inside
-    return inside
-
 # ==================== 页面配置 ====================
 st.set_page_config(layout="wide", page_title="无人机地面站")
 st.sidebar.title("导航")
@@ -87,7 +76,7 @@ if "point_a_gcj" not in st.session_state:
     st.session_state.point_a_gcj = (32.2322, 118.749)
     st.session_state.point_b_gcj = (32.2343, 118.749)
 if "flight_height" not in st.session_state:
-    st.session_state.flight_height = 50
+    st.session_state.flight_height = 50.0
 if "safe_radius" not in st.session_state:
     st.session_state.safe_radius = 10.0
 if "flight_speed" not in st.session_state:
@@ -132,13 +121,12 @@ def clear_obstacles():
 # ==================== 简单绕行算法 ====================
 def plan_route():
     """简单直接的绕行算法"""
-    # 转换起点终点到WGS84
     a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     
     flight_h = st.session_state.flight_height
     safe_m = st.session_state.safe_radius
-    safe_deg = safe_m / 111000  # 米转度
+    safe_deg = safe_m / 111000
     
     waypoints = [[a_lat, a_lng]]
     messages = []
@@ -148,12 +136,10 @@ def plan_route():
     for obs in st.session_state.obstacles_list:
         try:
             oh = float(obs.get("height_m", 0))
-            if flight_h <= oh + 5:  # 飞行高度低于障碍物（加5米余量）
-                # 获取障碍物中心点
+            if flight_h <= oh + 5:
                 coords = obs["geojson"]["geometry"]["coordinates"][0]
                 center_lng = sum(c[0] for c in coords) / len(coords)
                 center_lat = sum(c[1] for c in coords) / len(coords)
-                # 转换到WGS84
                 wlat, wlng = gcj02_to_wgs84(center_lat, center_lng)
                 obstacles_to_bypass.append({
                     "name": obs.get("name", "障碍物"),
@@ -165,15 +151,9 @@ def plan_route():
             pass
     
     if not obstacles_to_bypass:
-        # 没有需要绕行的，直接走直线
         waypoints.append([b_lat, b_lng])
         messages.append("所有障碍物均可飞越，航线为直线")
         return waypoints, messages
-    
-    # 按距离起点的距离排序
-    for obs in obstacles_to_bypass:
-        obs["dist"] = haversine_distance(a_lat, a_lng, obs["lat"], obs["lng"])
-    obstacles_to_bypass.sort(key=lambda x: x["dist"])
     
     # 计算AB方向
     dx = b_lng - a_lng
@@ -182,13 +162,10 @@ def plan_route():
     if length > 0:
         dx /= length
         dy /= length
-    # 垂直方向（左右）
     perp_x = -dy
     perp_y = dx
     
-    # 为每个障碍物添加绕行点
     for obs in obstacles_to_bypass:
-        # 绕行距离 = 安全半径 * 2（明显绕开）
         offset = safe_deg * 2
         
         if st.session_state.bypass_strategy == "向左绕行":
@@ -201,14 +178,12 @@ def plan_route():
             lng = obs["lng"] + perp_x * offset
             waypoints.append([lat, lng])
             messages.append(f"{obs['name']}({obs['height']}m)：向右绕行")
-        else:  # 最佳航线
-            # 计算左右两个候选点
+        else:
             left_lat = obs["lat"] + perp_y * offset
             left_lng = obs["lng"] - perp_x * offset
             right_lat = obs["lat"] - perp_y * offset
             right_lng = obs["lng"] + perp_x * offset
             
-            # 计算哪个更接近AB直线
             left_cross = abs(left_lng * dx - left_lat * dy)
             right_cross = abs(right_lng * dx - right_lat * dy)
             
@@ -221,7 +196,6 @@ def plan_route():
     
     waypoints.append([b_lat, b_lng])
     
-    # 去重
     unique = [waypoints[0]]
     for wp in waypoints[1:]:
         if haversine_distance(unique[-1][0], unique[-1][1], wp[0], wp[1]) > 5:
@@ -298,7 +272,7 @@ def flight_monitor():
         traveled = st.session_state.flight_speed * elapsed
         total = total_distance(st.session_state.waypoints)
         progress = traveled / total if total > 0 else 0
-        battery = max(0, 100 - elapsed * 2)
+        battery = max(0.0, 100.0 - elapsed * 2)
         
         c1,c2,c3,c4,c5,c6 = st.columns(6)
         with c1: st.metric("当前航点", f"{min(int(len(st.session_state.waypoints)*progress)+1, len(st.session_state.waypoints))}/{len(st.session_state.waypoints)}")
@@ -343,35 +317,36 @@ if page == "航线规划":
     
     col1,col2,col3,col4 = st.columns(4)
     with col1:
-        fh = st.number_input("飞行高度(m)", 10, 200, st.session_state.flight_height)
+        fh = st.number_input("飞行高度(m)", min_value=10.0, max_value=200.0, value=st.session_state.flight_height, step=5.0)
         if fh != st.session_state.flight_height:
             st.session_state.flight_height = fh
             st.session_state.waypoints = []
     with col2:
-        sr = st.number_input("安全半径(m)", 5, 50, st.session_state.safe_radius)
+        sr = st.number_input("安全半径(m)", min_value=5.0, max_value=50.0, value=st.session_state.safe_radius, step=5.0)
         if sr != st.session_state.safe_radius:
             st.session_state.safe_radius = sr
             st.session_state.waypoints = []
     with col3:
-        sp = st.number_input("速度(m/s)", 1, 30, st.session_state.flight_speed)
+        sp = st.number_input("速度(m/s)", min_value=1.0, max_value=30.0, value=st.session_state.flight_speed, step=1.0)
         st.session_state.flight_speed = sp
     with col4:
-        strat = st.selectbox("绕行策略", ["向左绕行", "向右绕行", "最佳航线"], index=["向左绕行","向右绕行","最佳航线"].index(st.session_state.bypass_strategy))
+        strat = st.selectbox("绕行策略", ["向左绕行", "向右绕行", "最佳航线"], 
+                            index=["向左绕行","向右绕行","最佳航线"].index(st.session_state.bypass_strategy))
         if strat != st.session_state.bypass_strategy:
             st.session_state.bypass_strategy = strat
             st.session_state.waypoints = []
     
     colA, colB = st.columns(2)
     with colA:
-        la = st.number_input("起点A纬度", 32.0, 33.0, st.session_state.point_a_gcj[0], format="%.6f")
-        loa = st.number_input("起点A经度", 118.0, 119.0, st.session_state.point_a_gcj[1], format="%.6f")
+        la = st.number_input("起点A纬度", min_value=32.0, max_value=33.0, value=st.session_state.point_a_gcj[0], format="%.6f")
+        loa = st.number_input("起点A经度", min_value=118.0, max_value=119.0, value=st.session_state.point_a_gcj[1], format="%.6f")
         if st.button("设置A"):
             st.session_state.point_a_gcj = (la, loa)
             st.session_state.waypoints = []
             st.rerun()
     with colB:
-        lb = st.number_input("终点B纬度", 32.0, 33.0, st.session_state.point_b_gcj[0], format="%.6f")
-        lob = st.number_input("终点B经度", 118.0, 119.0, st.session_state.point_b_gcj[1], format="%.6f")
+        lb = st.number_input("终点B纬度", min_value=32.0, max_value=33.0, value=st.session_state.point_b_gcj[0], format="%.6f")
+        lob = st.number_input("终点B经度", min_value=118.0, max_value=119.0, value=st.session_state.point_b_gcj[1], format="%.6f")
         if st.button("设置B"):
             st.session_state.point_b_gcj = (lb, lob)
             st.session_state.waypoints = []
@@ -381,15 +356,15 @@ if page == "航线规划":
         st.subheader("障碍物列表")
         for i, obs in enumerate(st.session_state.obstacles_list):
             oh = float(obs.get("height_m", 0))
-            c1,c2,c3 = st.columns([2,2,1])
-            with c1:
-                st.write(f"{obs['name']} ({oh}m)")
-            with c2:
-                new_h = st.number_input("高度", value=oh, key=f"h_{i}", step=5)
+            col_h1, col_h2, col_h3 = st.columns([2,2,1])
+            with col_h1:
+                st.write(f"{obs['name']}")
+            with col_h2:
+                new_h = st.number_input("高度", min_value=5.0, max_value=200.0, value=oh, key=f"h_{i}", step=5.0)
                 if new_h != oh:
                     st.session_state.obstacles_list[i]["height_m"] = new_h
                     st.session_state.waypoints = []
-            with c3:
+            with col_h3:
                 if st.button("删除", key=f"del_{i}"):
                     st.session_state.obstacles_list.pop(i)
                     st.session_state.waypoints = []
@@ -399,11 +374,16 @@ if page == "航线规划":
     
     btn1,btn2,btn3 = st.columns(3)
     with btn1:
-        if st.button("保存障碍物"): save_obstacles()
+        if st.button("保存障碍物"):
+            save_obstacles()
     with btn2:
-        if st.button("加载障碍物"): load_obstacles()
+        if st.button("加载障碍物"):
+            load_obstacles()
+            st.rerun()
     with btn3:
-        if st.button("清除全部"): clear_obstacles()
+        if st.button("清除全部"):
+            clear_obstacles()
+            st.rerun()
     
     draw_map()
     
