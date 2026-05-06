@@ -66,33 +66,6 @@ def haversine_distance(lat1, lng1, lat2, lng2):
     a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# ==================== 简单几何检测 ====================
-def point_in_polygon(px, py, polygon):
-    inside = False
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i+1)%n]
-        if ((y1 > py) != (y2 > py)) and (px < (x2-x1)*(py-y1)/(y2-y1)+x1):
-            inside = not inside
-    return inside
-
-def segments_intersect(a, b, c, d):
-    def ccw(ax, ay, bx, by, cx, cy):
-        return (cy-ay)*(bx-ax) > (by-ay)*(cx-ax)
-    return (ccw(a[0], a[1], c[0], c[1], d[0], d[1]) != ccw(b[0], b[1], c[0], c[1], d[0], d[1])) and \
-           (ccw(a[0], a[1], b[0], b[1], c[0], c[1]) != ccw(a[0], a[1], b[0], b[1], d[0], d[1]))
-
-def line_intersects_polygon(p1, p2, polygon):
-    if point_in_polygon(p1[0], p1[1], polygon) or point_in_polygon(p2[0], p2[1], polygon):
-        return True
-    for i in range(len(polygon)):
-        p3 = polygon[i]
-        p4 = polygon[(i+1)%len(polygon)]
-        if segments_intersect(p1, p2, p3, p4):
-            return True
-    return False
-
 # ==================== 页面配置 ====================
 st.set_page_config(layout="wide", page_title="无人机地面站")
 st.sidebar.title("导航")
@@ -145,112 +118,55 @@ def clear_obstacles():
     st.session_state.waypoints = []
     st.success("已清除")
 
-# ==================== 核心绕行算法 ====================
+# ==================== 核心绕行算法（强制绕过） ====================
 def plan_route():
     a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
     b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
     
-    flight_h = st.session_state.flight_height
-    safe_deg = st.session_state.safe_radius / 111000
+    # 绕行距离（米 -> 经纬度）
+    offset_deg = st.session_state.safe_radius / 111000
     
-    # 收集所有需要绕行的障碍物（膨胀后的多边形）
-    obstacles = []
-    for obs in st.session_state.obstacles_list:
-        try:
-            oh = float(obs.get("height_m", 0))
-            if flight_h <= oh:  # 需要绕行
-                coords = obs["geojson"]["geometry"]["coordinates"][0]
-                poly = []
-                for c in coords:
-                    wlat, wlng = gcj02_to_wgs84(c[1], c[0])
-                    poly.append([wlng, wlat])
-                obstacles.append(poly)
-        except:
-            pass
-    
-    if not obstacles:
-        return [[a_lat, a_lng], [b_lat, b_lng]], []
-    
-    # 检查直线是否穿过任何障碍物
-    p1 = [a_lng, a_lat]
-    p2 = [b_lng, b_lat]
-    
-    need_bypass = False
-    for poly in obstacles:
-        if line_intersects_polygon(p1, p2, poly):
-            need_bypass = True
-            break
-    
-    if not need_bypass:
-        return [[a_lat, a_lng], [b_lat, b_lng]], ["所有障碍物均可飞越"]
-    
-    # 计算AB方向
+    # 1. 找起点到终点的直线方向
     dx = b_lng - a_lng
     dy = b_lat - a_lat
     length = math.sqrt(dx*dx + dy*dy)
     if length > 0:
         dx /= length
         dy /= length
+    
+    # 垂直方向
     perp_x = -dy
     perp_y = dx
     
-    # 绕行距离（约50米）
-    offset = 0.0005
-    
-    # 计算左右绕行点
+    # 2. 计算左右两个绕行点（在 AB 直线中点的旁边）
     center_lng = (a_lng + b_lng) / 2
     center_lat = (a_lat + b_lat) / 2
     
-    left_lat = center_lat + perp_y * offset
-    left_lng = center_lng - perp_x * offset
-    right_lat = center_lat - perp_y * offset
-    right_lng = center_lng + perp_x * offset
+    left_point = [center_lat + perp_y * offset_deg, center_lng - perp_x * offset_deg]
+    right_point = [center_lat - perp_y * offset_deg, center_lng + perp_x * offset_deg]
     
+    # 3. 根据策略选择
     if st.session_state.bypass_strategy == "向左绕行":
-        waypoints = [[a_lat, a_lng], [left_lat, left_lng], [b_lat, b_lng]]
-        messages = ["向左绕行"]
+        bypass = left_point
+        msg = "向左绕行"
     elif st.session_state.bypass_strategy == "向右绕行":
-        waypoints = [[a_lat, a_lng], [right_lat, right_lng], [b_lat, b_lng]]
-        messages = ["向右绕行"]
-    else:
-        # 最佳航线：检查哪个绕行点不会穿过其他障碍物
-        left_wp = [left_lat, left_lng]
-        right_wp = [right_lat, right_lng]
-        
-        left_good = True
-        right_good = True
-        
-        for poly in obstacles:
-            if line_intersects_polygon([a_lng, a_lat], [left_wp[1], left_wp[0]], poly):
-                left_good = False
-            if line_intersects_polygon([left_wp[1], left_wp[0]], [b_lng, b_lat], poly):
-                left_good = False
-            if line_intersects_polygon([a_lng, a_lat], [right_wp[1], right_wp[0]], poly):
-                right_good = False
-            if line_intersects_polygon([right_wp[1], right_wp[0]], [b_lng, b_lat], poly):
-                right_good = False
-        
-        if left_good and right_good:
-            # 两个都可用，选距离短的
-            left_dist = haversine_distance(a_lat, a_lng, left_lat, left_lng) + haversine_distance(left_lat, left_lng, b_lat, b_lng)
-            right_dist = haversine_distance(a_lat, a_lng, right_lat, right_lng) + haversine_distance(right_lat, right_lng, b_lat, b_lng)
-            if left_dist <= right_dist:
-                waypoints = [[a_lat, a_lng], [left_lat, left_lng], [b_lat, b_lng]]
-                messages = ["最佳航线(左)"]
-            else:
-                waypoints = [[a_lat, a_lng], [right_lat, right_lng], [b_lat, b_lng]]
-                messages = ["最佳航线(右)"]
-        elif left_good:
-            waypoints = [[a_lat, a_lng], [left_lat, left_lng], [b_lat, b_lng]]
-            messages = ["最佳航线(左)"]
-        elif right_good:
-            waypoints = [[a_lat, a_lng], [right_lat, right_lng], [b_lat, b_lng]]
-            messages = ["最佳航线(右)"]
+        bypass = right_point
+        msg = "向右绕行"
+    else:  # 最佳航线
+        # 计算到起点和终点的总距离
+        left_dist = haversine_distance(a_lat, a_lng, left_point[0], left_point[1]) + \
+                    haversine_distance(left_point[0], left_point[1], b_lat, b_lng)
+        right_dist = haversine_distance(a_lat, a_lng, right_point[0], right_point[1]) + \
+                     haversine_distance(right_point[0], right_point[1], b_lat, b_lng)
+        if left_dist <= right_dist:
+            bypass = left_point
+            msg = "最佳航线（左）"
         else:
-            waypoints = [[a_lat, a_lng], [left_lat, left_lng], [b_lat, b_lng]]
-            messages = ["强制向左绕行"]
+            bypass = right_point
+            msg = "最佳航线（右）"
     
-    return waypoints, messages
+    waypoints = [[a_lat, a_lng], bypass, [b_lat, b_lng]]
+    return waypoints, [msg]
 
 def total_distance(waypoints):
     total = 0
@@ -368,12 +284,10 @@ if page == "航线规划":
         fh = st.number_input("飞行高度(m)", min_value=10.0, max_value=200.0, value=st.session_state.flight_height, step=5.0)
         if fh != st.session_state.flight_height:
             st.session_state.flight_height = fh
-            st.session_state.waypoints = []
     with col2:
         sr = st.number_input("安全半径(m)", min_value=5.0, max_value=50.0, value=st.session_state.safe_radius, step=5.0)
         if sr != st.session_state.safe_radius:
             st.session_state.safe_radius = sr
-            st.session_state.waypoints = []
     with col3:
         sp = st.number_input("速度(m/s)", min_value=1.0, max_value=30.0, value=st.session_state.flight_speed, step=1.0)
         st.session_state.flight_speed = sp
@@ -382,7 +296,6 @@ if page == "航线规划":
                             index=["向左绕行","向右绕行","最佳航线"].index(st.session_state.bypass_strategy))
         if strat != st.session_state.bypass_strategy:
             st.session_state.bypass_strategy = strat
-            st.session_state.waypoints = []
     
     colA, colB = st.columns(2)
     with colA:
@@ -390,14 +303,12 @@ if page == "航线规划":
         loa = st.number_input("起点A经度", min_value=118.0, max_value=119.0, value=st.session_state.point_a_gcj[1], format="%.6f")
         if st.button("设置A"):
             st.session_state.point_a_gcj = (la, loa)
-            st.session_state.waypoints = []
             st.rerun()
     with colB:
         lb = st.number_input("终点B纬度", min_value=32.0, max_value=33.0, value=st.session_state.point_b_gcj[0], format="%.6f")
         lob = st.number_input("终点B经度", min_value=118.0, max_value=119.0, value=st.session_state.point_b_gcj[1], format="%.6f")
         if st.button("设置B"):
             st.session_state.point_b_gcj = (lb, lob)
-            st.session_state.waypoints = []
             st.rerun()
     
     if st.session_state.obstacles_list:
@@ -411,11 +322,9 @@ if page == "航线规划":
                 new_h = st.number_input("高度", min_value=5.0, max_value=200.0, value=oh, key=f"h_{i}", step=5.0)
                 if new_h != oh:
                     st.session_state.obstacles_list[i]["height_m"] = new_h
-                    st.session_state.waypoints = []
             with col_h3:
                 if st.button("删除", key=f"del_{i}"):
                     st.session_state.obstacles_list.pop(i)
-                    st.session_state.waypoints = []
                     st.rerun()
     else:
         st.info("在地图上画多边形添加障碍物")
@@ -436,22 +345,12 @@ if page == "航线规划":
     draw_map()
     
     if st.button("生成航线", use_container_width=True):
-        if st.session_state.obstacles_list:
-            wps, msgs = plan_route()
-            if len(wps) >= 2:
-                st.session_state.waypoints = wps
-                for msg in msgs:
-                    st.warning(msg)
-                st.success(f"航线已生成！共 {len(wps)} 个航点，总距离 {int(total_distance(wps))} 米")
-                st.rerun()
-            else:
-                st.error("生成失败")
-        else:
-            a_lat, a_lng = gcj02_to_wgs84(st.session_state.point_a_gcj[0], st.session_state.point_a_gcj[1])
-            b_lat, b_lng = gcj02_to_wgs84(st.session_state.point_b_gcj[0], st.session_state.point_b_gcj[1])
-            st.session_state.waypoints = [[a_lat, a_lng], [b_lat, b_lng]]
-            st.success(f"无障碍物, 直线距离: {int(total_distance(st.session_state.waypoints))}米")
-            st.rerun()
+        wps, msgs = plan_route()
+        st.session_state.waypoints = wps
+        for msg in msgs:
+            st.warning(msg)
+        st.success(f"航线已生成！共 {len(wps)} 个航点，总距离 {int(total_distance(wps))} 米")
+        st.rerun()
 
 else:
     flight_monitor()
