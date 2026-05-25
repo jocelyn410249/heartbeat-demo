@@ -19,15 +19,13 @@ st.set_page_config(
 
 st.title("🚁 无人机航线规划与飞行监控系统")
 
-# ====================== 配置文件 ======================
-CONFIG_FILE = "obstacle_config.json"
-OBSTACLES_FILE = "obstacles.json"  # 独立的障碍物数据文件
+# ====================== 配置文件路径 ======================
+# 获取当前脚本所在目录
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "obstacle_config.json")
+OBSTACLES_FILE = os.path.join(SCRIPT_DIR, "obstacles.json")  # 独立的障碍物数据文件
 
 # ====================== 坐标转换函数（WGS-84 ↔ GCJ-02） ======================
-# 功能描述：实现WGS-84与GCJ-02火星坐标系的双向转换
-# 设计原因：OpenStreetMap使用WGS-84坐标系，而高德/百度地图使用GCJ-02
-# 使用方法：显示地图时使用WGS-84，存储坐标时可选择使用GCJ-02
-
 def gcj02_to_wgs84(lat, lng):
     """GCJ-02火星坐标系转WGS-84坐标系"""
     a = 6378245.0
@@ -87,20 +85,21 @@ def wgs84_to_gcj02(lat, lng):
     return lat + dlat, lng + dlng
 
 # ====================== 障碍物数据持久化函数 ======================
-# 功能描述：将障碍物列表保存到独立的obstacles.json文件
-# 设计原因：分离障碍物数据与配置数据，便于管理和备份
-# 数据结构：包含坐标数组(polygon)和高度字段(height)
-
 def save_obstacles_to_file():
     """将障碍物数据保存到obstacles.json文件"""
-    obstacles_data = {
-        "obstacles": st.session_state.obstacles,
-        "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "total_count": len(st.session_state.obstacles)
-    }
-    with open(OBSTACLES_FILE, "w", encoding="utf-8") as f:
-        json.dump(obstacles_data, f, ensure_ascii=False, indent=2)
-    add_comm_log("OBC 内部", f"障碍物数据已保存到 {OBSTACLES_FILE}，共 {len(st.session_state.obstacles)} 个")
+    try:
+        obstacles_data = {
+            "obstacles": st.session_state.obstacles,
+            "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_count": len(st.session_state.obstacles)
+        }
+        with open(OBSTACLES_FILE, "w", encoding="utf-8") as f:
+            json.dump(obstacles_data, f, ensure_ascii=False, indent=2)
+        st.toast(f"✅ 障碍物已保存到: {OBSTACLES_FILE}", icon="💾")
+        return True
+    except Exception as e:
+        st.error(f"保存障碍物文件失败: {e}")
+        return False
 
 def load_obstacles_from_file():
     """从obstacles.json文件加载障碍物数据"""
@@ -109,23 +108,29 @@ def load_obstacles_from_file():
             with open(OBSTACLES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             st.session_state.obstacles = data.get("obstacles", [])
-            add_comm_log("OBC 内部", f"已从 {OBSTACLES_FILE} 加载障碍物数据，共 {len(st.session_state.obstacles)} 个")
+            st.toast(f"✅ 已从 {OBSTACLES_FILE} 加载 {len(st.session_state.obstacles)} 个障碍物", icon="📂")
             return True
         except Exception as e:
             st.error(f"加载障碍物文件失败: {e}")
             return False
-    return False
+    else:
+        st.info(f"📭 未找到障碍物文件: {OBSTACLES_FILE}")
+        return False
 
 # ====================== 初始化 Session State ======================
-# 存储的坐标为WGS-84格式（与OpenStreetMap一致）
 if "start_point" not in st.session_state:
-    st.session_state.start_point = (32.2345, 118.7492)  # WGS-84坐标
+    st.session_state.start_point = (32.2345, 118.7492)
 if "end_point" not in st.session_state:
-    st.session_state.end_point = (32.2337, 118.7496)   # WGS-84坐标
+    st.session_state.end_point = (32.2337, 118.7496)
 if "obstacles" not in st.session_state:
     # 尝试从文件加载障碍物数据
     if os.path.exists(OBSTACLES_FILE):
-        load_obstacles_from_file()
+        try:
+            with open(OBSTACLES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            st.session_state.obstacles = data.get("obstacles", [])
+        except:
+            st.session_state.obstacles = []
     else:
         st.session_state.obstacles = []
 if "flight_altitude" not in st.session_state:
@@ -135,7 +140,7 @@ if "safety_radius" not in st.session_state:
 if "current_route" not in st.session_state:
     st.session_state.current_route = []
 if "map_center" not in st.session_state:
-    st.session_state.map_center = [32.2341, 118.7494]  # WGS-84坐标
+    st.session_state.map_center = [32.2341, 118.7494]
 if "pending_polygon" not in st.session_state:
     st.session_state.pending_polygon = None
 if "set_mode" not in st.session_state:
@@ -213,8 +218,6 @@ def load_data():
         st.session_state.flight_altitude = data.get("flight_altitude", 15.0)
         st.session_state.safety_radius = data.get("safety_radius", 15.0)
         st.session_state.route_mode = data.get("route_mode", "best")
-    # 也尝试从独立文件加载
-    load_obstacles_from_file()
 
 load_data()
 
@@ -285,7 +288,6 @@ def is_path_safe(start, end, obstacles, flight_altitude):
 
 # ====================== 通用 Dijkstra 路径规划 ======================
 def dijkstra_path(nodes, start, end, obstacles, flight_altitude):
-    """在节点列表中找最短安全路径，返回路径点列表"""
     unique = []
     for n in nodes:
         if n not in unique:
@@ -361,7 +363,6 @@ def plan_route_best(start, end, obstacles, flight_altitude, safety_radius):
     
     return dijkstra_path(nodes, start, end, high_obstacles, flight_altitude)
 
-# ====================== 强制向左绕行 ======================
 def plan_route_left(start, end, obstacles, flight_altitude, safety_radius):
     high_obstacles = [obs for obs in obstacles if obs.get("height", 0) >= flight_altitude]
     if not high_obstacles:
@@ -386,7 +387,6 @@ def plan_route_left(start, end, obstacles, flight_altitude, safety_radius):
     
     return dijkstra_path(nodes, start, end, high_obstacles, flight_altitude)
 
-# ====================== 强制向右绕行 ======================
 def plan_route_right(start, end, obstacles, flight_altitude, safety_radius):
     high_obstacles = [obs for obs in obstacles if obs.get("height", 0) >= flight_altitude]
     if not high_obstacles:
@@ -480,7 +480,6 @@ def add_flight_log(action, details, level="info"):
         st.session_state.flight_log = st.session_state.flight_log[:50]
 
 def add_comm_log(source, message, direction="OBC内部"):
-    """添加通信日志 - 参考图片格式"""
     st.session_state.comm_log.insert(0, {
         "time": datetime.now().strftime("%H:%M:%S"),
         "source": source,
@@ -491,7 +490,6 @@ def add_comm_log(source, message, direction="OBC内部"):
         st.session_state.comm_log = st.session_state.comm_log[:50]
 
 def advance_waypoint_auto():
-    """自动前进一个航点，并记录通信日志"""
     if not st.session_state.current_route:
         return
     
@@ -557,19 +555,13 @@ def reset_mission():
     st.session_state.battery_level = 100
     add_flight_log("任务重置", "", "info")
 
-# ====================== 创建地图（使用OpenStreetMap底图） ======================
+# ====================== 创建地图 ======================
 def create_map(show_flight=True):
-    """
-    创建基于OpenStreetMap的地图组件
-    功能描述：使用OpenStreetMap标准瓦片服务，坐标系为WGS-84
-    设计原因：OSM使用WGS-84坐标系，可直接使用GPS坐标，无需转换
-    参数含义：show_flight控制是否显示飞行状态（无人机位置、已飞航线等）
-    """
     m = folium.Map(
-        location=st.session_state.map_center,  # 地图中心点坐标[纬度,经度]
-        zoom_start=18,                         # 缩放级别，18级可清晰显示校园建筑
-        tiles='OpenStreetMap',                 # 使用OSM标准瓦片服务
-        attr='OpenStreetMap contributors'      # 地图数据来源声明
+        location=st.session_state.map_center,
+        zoom_start=18,
+        tiles='OpenStreetMap',
+        attr='OpenStreetMap contributors'
     )
     
     if not st.session_state.mission_active and not show_flight:
@@ -589,21 +581,18 @@ def create_map(show_flight=True):
         )
         draw.add_to(m)
     
-    # 起点标记（WGS-84坐标直接使用）
     folium.Marker(
         location=st.session_state.start_point,
         popup="🚁 起点",
         icon=folium.Icon(color="red", icon="play", prefix="fa")
     ).add_to(m)
     
-    # 终点标记
     folium.Marker(
         location=st.session_state.end_point,
         popup="🎯 终点",
         icon=folium.Icon(color="green", icon="flag-checkered", prefix="fa")
     ).add_to(m)
     
-    # 障碍物绘制
     for i, obs in enumerate(st.session_state.obstacles):
         polygon = obs.get("polygon", [])
         height = obs.get("height", 10)
@@ -627,7 +616,6 @@ def create_map(show_flight=True):
                 popup=f"{name}\n高度: {height}m"
             ).add_to(m)
     
-    # 航线绘制
     if st.session_state.current_route:
         folium.PolyLine(
             locations=st.session_state.current_route,
@@ -647,7 +635,6 @@ def create_map(show_flight=True):
                     opacity=0.9
                 ).add_to(m)
         
-        # 航点标记
         for i, point in enumerate(st.session_state.current_route):
             if i == 0:
                 color = "red"
@@ -668,7 +655,6 @@ def create_map(show_flight=True):
                 popup=f"航点 {i+1}"
             ).add_to(m)
     
-    # 无人机当前位置
     if show_flight and st.session_state.current_position:
         folium.Marker(
             location=st.session_state.current_position,
@@ -797,12 +783,11 @@ with tab1:
                 col_btn_a, col_btn_b = st.columns(2)
                 with col_btn_a:
                     if st.button("✅ 确认添加", key="confirm_add_obs", use_container_width=True):
-                        # 构建障碍物数据对象
                         new_obs = {
-                            "name": obs_name,                              # 障碍物名称
-                            "height": obs_height,                          # 障碍物高度（米）
-                            "polygon": st.session_state.pending_polygon,   # 多边形顶点坐标数组 [[lat,lng],...]
-                            "create_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 创建时间
+                            "name": obs_name,
+                            "height": obs_height,
+                            "polygon": st.session_state.pending_polygon,
+                            "create_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         }
                         st.session_state.obstacles.append(new_obs)
                         st.session_state.pending_polygon = None
@@ -904,19 +889,20 @@ with tab1:
         
         st.subheader(f"📦 障碍物列表 ({len(st.session_state.obstacles)})")
         
-        # 添加一个按钮来手动保存障碍物到文件
-        col_save1, col_save2 = st.columns(2)
+        # 障碍物文件管理按钮
+        col_save1, col_save2, col_save3 = st.columns(3)
         with col_save1:
-            if st.button("💾 保存障碍物到文件", key="save_obs_to_file_btn", use_container_width=True):
-                save_obstacles_to_file()
-                st.success(f"障碍物已保存到 {OBSTACLES_FILE}")
+            if st.button("💾 保存到文件", key="save_obs_btn", use_container_width=True):
+                if save_obstacles_to_file():
+                    st.success(f"✅ 已保存到 {OBSTACLES_FILE}")
         with col_save2:
-            if st.button("📂 从文件加载障碍物", key="load_obs_from_file_btn", use_container_width=True):
+            if st.button("📂 从文件加载", key="load_obs_btn", use_container_width=True):
                 if load_obstacles_from_file():
                     st.session_state.current_route = []
                     st.rerun()
-                else:
-                    st.warning(f"未找到 {OBSTACLES_FILE} 文件")
+        with col_save3:
+            if st.button("📁 打开文件位置", key="open_file_btn", use_container_width=True):
+                st.info(f"文件路径: {OBSTACLES_FILE}")
         
         if st.session_state.obstacles:
             for i, obs in enumerate(st.session_state.obstacles):
@@ -991,7 +977,6 @@ with tab2:
     
     st.divider()
     
-    # 飞行实时状态表格
     st.subheader("📊 飞行实时状态")
     
     col_stat1, col_stat2, col_stat3, col_stat4, col_stat5, col_stat6 = st.columns(6)
@@ -1025,14 +1010,12 @@ with tab2:
     
     st.divider()
     
-    # 实时飞行地图
     st.subheader("🗺️ 实时飞行地图")
     flight_map = create_map(show_flight=True)
     st_folium(flight_map, width=900, height=450, returned_objects=[], key="monitor_map")
     
     st.divider()
     
-    # 任务进度
     st.subheader("📈 任务进度")
     
     if st.session_state.current_route:
@@ -1129,11 +1112,10 @@ with tab3:
         else:
             st.info("暂无心跳数据")
 
-# ====================== 标签页4：通信链路与日志 ======================
+# ====================== 标签页4 ======================
 with tab4:
     st.subheader("📡 通信链路拓扑与数据流")
     
-    # 参考图片样式的通信拓扑
     col_link1, col_link2, col_link3 = st.columns(3)
     
     with col_link1:
@@ -1167,7 +1149,6 @@ with tab4:
     
     st.divider()
     
-    # 链路统计
     st.subheader("🔗 链路统计")
     col_stat1, col_stat2 = st.columns(2)
     with col_stat1:
@@ -1179,14 +1160,12 @@ with tab4:
     
     st.divider()
     
-    # 业务流程说明
     st.subheader("📋 业务流程")
     st.markdown("- GCS → OBC → FCU")
     st.markdown("- FCU → OBC → GCS")
     
     st.divider()
     
-    # 通信日志 - 参考图片格式
     st.subheader("📝 通信日志")
     
     col_clear, col_empty = st.columns([1, 4])
@@ -1197,7 +1176,6 @@ with tab4:
     
     st.markdown("---")
     
-    # 按方向分组显示
     fcu_logs = [log for log in st.session_state.comm_log if "FCU→" in log.get("direction", "")]
     obc_logs = [log for log in st.session_state.comm_log if log.get("direction") == "OBC内部"]
     
